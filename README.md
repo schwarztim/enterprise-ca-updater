@@ -36,6 +36,9 @@ This tool automatically:
 git clone https://github.com/schwarztim/netskope-pem-updater.git
 cd netskope-pem-updater
 
+# Make the script executable
+chmod +x update-netskope-ca-bundle.sh
+
 # Run the updater
 ./update-netskope-ca-bundle.sh
 
@@ -78,6 +81,9 @@ cd netskope-pem-updater
 #### Patch All Existing Virtual Environments
 
 ```bash
+# Make script executable (if needed)
+chmod +x update-netskope-ca-bundle.sh
+
 # Preview changes (dry-run)
 ./update-netskope-ca-bundle.sh --dry-run
 
