@@ -1,16 +1,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Updates Python CA certificate bundles and Java keystores with Netskope certificates on Windows.
+    Updates Python CA certificate bundles with Netskope certificates on Windows.
 
 .DESCRIPTION
     This script:
     1. Locates or creates the Netskope certificate bundle
     2. Finds all Python cacert.pem files on the system
-    3. Appends the Netskope certificates to each Python bundle
-    4. Finds all Java cacerts keystores on the system
-    5. Imports Netskope certificates into each Java keystore
-    6. Sets environment variables for SSL certificate resolution
+    3. Appends the Netskope certificates to each bundle
+    4. Sets the REQUESTS_CA_BUNDLE environment variable
 
 .PARAMETER NetskopeDataPath
     Path to the Netskope data directory. Defaults to %ProgramData%\Netskope\STAgent\data
@@ -24,12 +22,6 @@
 .PARAMETER Force
     Recreate the Netskope bundle even if it already exists.
 
-.PARAMETER SkipPython
-    Skip Python certificate bundle updates.
-
-.PARAMETER SkipJava
-    Skip Java keystore updates.
-
 .EXAMPLE
     .\Update-NetskopeCABundle.ps1
     Runs the script with default settings.
@@ -42,14 +34,10 @@
     .\Update-NetskopeCABundle.ps1 -Force
     Force recreation of the Netskope certificate bundle.
 
-.EXAMPLE
-    .\Update-NetskopeCABundle.ps1 -SkipPython
-    Only update Java keystores, skip Python bundles.
-
 .NOTES
     Author: Tim Schwarz
-    Version: 2.0.0
-    Requires: PowerShell 5.1+, Administrator privileges, Java (for keystore updates)
+    Version: 1.0.0
+    Requires: PowerShell 5.1+, Administrator privileges
 #>
 
 [CmdletBinding()]
@@ -64,13 +52,7 @@ param(
     [switch]$DryRun,
 
     [Parameter(HelpMessage = "Force recreation of the bundle")]
-    [switch]$Force,
-
-    [Parameter(HelpMessage = "Skip Python certificate bundle updates")]
-    [switch]$SkipPython,
-
-    [Parameter(HelpMessage = "Skip Java keystore updates")]
-    [switch]$SkipJava
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -79,15 +61,10 @@ $ErrorActionPreference = "Stop"
 # Script-level variables
 $script:UpdateLog = [System.Collections.ArrayList]::new()
 $script:Stats = @{
-    PythonUpdated = 0
-    PythonSkipped = 0
-    PythonFailed  = 0
-    JavaUpdated   = 0
-    JavaSkipped   = 0
-    JavaFailed    = 0
+    Updated = 0
+    Skipped = 0
+    Failed  = 0
 }
-$script:JavaKeystorePassword = "changeit"  # Default Java keystore password
-$script:NetskopeAlias = "netskope-ca"
 
 #region Logging Functions
 
@@ -133,12 +110,9 @@ function Write-Summary {
 ================================================================================
                                   Summary
 ================================================================================
-    Python Bundles Updated:  $($script:Stats.PythonUpdated)
-    Python Bundles Skipped:  $($script:Stats.PythonSkipped)
-    Python Bundles Failed:   $($script:Stats.PythonFailed)
-    Java Keystores Updated:  $($script:Stats.JavaUpdated)
-    Java Keystores Skipped:  $($script:Stats.JavaSkipped)
-    Java Keystores Failed:   $($script:Stats.JavaFailed)
+    Files Updated:  $($script:Stats.Updated)
+    Files Skipped:  $($script:Stats.Skipped)
+    Files Failed:   $($script:Stats.Failed)
 ================================================================================
 
 "@
@@ -341,7 +315,7 @@ function Update-CertificateFile {
         # Check if already updated
         if (Test-NetskopeAlreadyPresent -FilePath $FilePath) {
             Write-Log "Skipping (already updated): $FilePath" -Level WARNING
-            $script:Stats.PythonSkipped++
+            $script:Stats.Skipped++
             return
         }
 
@@ -366,11 +340,11 @@ function Update-CertificateFile {
         Add-Content -Path $FilePath -Value ($marker + $NetskopeContent) -Encoding UTF8
 
         Write-Log "Updated: $FilePath" -Level SUCCESS
-        $script:Stats.PythonUpdated++
+        $script:Stats.Updated++
     }
     catch {
         Write-Log "Failed to update $FilePath`: $_" -Level ERROR
-        $script:Stats.PythonFailed++
+        $script:Stats.Failed++
     }
 }
 
@@ -411,202 +385,6 @@ function Set-CertificateEnvironmentVariables {
     }
     catch {
         Write-Log "Failed to set environment variables: $_" -Level ERROR
-    }
-}
-
-#endregion
-
-#region Java Keystore Functions
-
-function Find-JavaInstallations {
-    <#
-    .SYNOPSIS
-        Discovers Java installations on the system.
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param()
-
-    Write-Log "Searching for Java installations..."
-
-    $javaHomes = [System.Collections.ArrayList]::new()
-
-    # Check JAVA_HOME environment variable
-    $javaHomeEnv = [Environment]::GetEnvironmentVariable("JAVA_HOME", "Machine")
-    if ($javaHomeEnv -and (Test-Path $javaHomeEnv)) {
-        [void]$javaHomes.Add($javaHomeEnv)
-    }
-
-    # Common Java installation locations
-    $searchRoots = @(
-        "$env:ProgramFiles\Java\*",
-        "${env:ProgramFiles(x86)}\Java\*",
-        "$env:ProgramFiles\Eclipse Adoptium\*",
-        "$env:ProgramFiles\Amazon Corretto\*",
-        "$env:ProgramFiles\Microsoft\*",
-        "$env:ProgramFiles\AdoptOpenJDK\*",
-        "$env:ProgramFiles\Zulu\*",
-        "$env:LOCALAPPDATA\Programs\Eclipse Adoptium\*"
-    )
-
-    foreach ($root in $searchRoots) {
-        $resolvedPaths = Resolve-Path -Path $root -ErrorAction SilentlyContinue
-
-        foreach ($path in $resolvedPaths) {
-            $keytoolPath = Join-Path -Path $path.Path -ChildPath "bin\keytool.exe"
-            if (Test-Path -Path $keytoolPath -PathType Leaf) {
-                [void]$javaHomes.Add($path.Path)
-            }
-        }
-    }
-
-    # Remove duplicates
-    $uniqueHomes = $javaHomes | Sort-Object -Unique
-
-    Write-Log "Found $($uniqueHomes.Count) Java installation(s)"
-    return $uniqueHomes
-}
-
-function Find-JavaKeystores {
-    <#
-    .SYNOPSIS
-        Discovers Java cacerts keystore files.
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param()
-
-    Write-Log "Searching for Java keystores..."
-
-    $keystores = [System.Collections.ArrayList]::new()
-    $javaHomes = Find-JavaInstallations
-
-    foreach ($javaHome in $javaHomes) {
-        # Check common locations within Java installation
-        $possibleLocations = @(
-            (Join-Path -Path $javaHome -ChildPath "lib\security\cacerts"),
-            (Join-Path -Path $javaHome -ChildPath "jre\lib\security\cacerts")
-        )
-
-        foreach ($cacertsPath in $possibleLocations) {
-            if (Test-Path -Path $cacertsPath -PathType Leaf) {
-                [void]$keystores.Add($cacertsPath)
-            }
-        }
-    }
-
-    # Remove duplicates
-    $uniqueKeystores = $keystores | Sort-Object -Unique
-
-    Write-Log "Discovered $($uniqueKeystores.Count) Java keystore(s)"
-    return $uniqueKeystores
-}
-
-function Test-NetskopeInKeystore {
-    <#
-    .SYNOPSIS
-        Checks if Netskope certificate already exists in a Java keystore.
-    #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory)]
-        [string]$KeystorePath
-    )
-
-    # Find keytool
-    $javaHome = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $KeystorePath))
-    $keytoolPath = Join-Path -Path $javaHome -ChildPath "bin\keytool.exe"
-
-    if (-not (Test-Path $keytoolPath)) {
-        # Try to find keytool in PATH
-        $keytoolPath = (Get-Command keytool.exe -ErrorAction SilentlyContinue).Source
-        if (-not $keytoolPath) {
-            Write-Log "keytool.exe not found for $KeystorePath" -Level WARNING
-            return $false
-        }
-    }
-
-    # Check if alias exists
-    $listOutput = & $keytoolPath -list -keystore $KeystorePath `
-        -storepass $script:JavaKeystorePassword `
-        -alias $script:NetskopeAlias 2>&1
-
-    return $LASTEXITCODE -eq 0
-}
-
-function Update-JavaKeystore {
-    <#
-    .SYNOPSIS
-        Imports Netskope certificate into a Java keystore.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$KeystorePath,
-
-        [Parameter(Mandatory)]
-        [string]$CertificateFile
-    )
-
-    try {
-        # Check if already present
-        if (Test-NetskopeInKeystore -KeystorePath $KeystorePath) {
-            Write-Log "Skipping (already present): $KeystorePath" -Level WARNING
-            $script:Stats.JavaSkipped++
-            return
-        }
-
-        if ($DryRun) {
-            Write-Log "[DRY-RUN] Would update keystore: $KeystorePath" -Level WARNING
-            return
-        }
-
-        # Find keytool
-        $javaHome = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $KeystorePath))
-        $keytoolPath = Join-Path -Path $javaHome -ChildPath "bin\keytool.exe"
-
-        if (-not (Test-Path $keytoolPath)) {
-            $keytoolPath = (Get-Command keytool.exe -ErrorAction SilentlyContinue).Source
-            if (-not $keytoolPath) {
-                throw "keytool.exe not found"
-            }
-        }
-
-        # Create backup
-        $backupPath = "$KeystorePath.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        Copy-Item -Path $KeystorePath -Destination $backupPath -Force
-
-        # Import certificate
-        $importArgs = @(
-            "-import"
-            "-noprompt"
-            "-trustcacerts"
-            "-alias", $script:NetskopeAlias
-            "-file", $CertificateFile
-            "-keystore", $KeystorePath
-            "-storepass", $script:JavaKeystorePassword
-        )
-
-        $result = & $keytoolPath $importArgs 2>&1
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Log "Updated Java keystore: $KeystorePath" -Level SUCCESS
-            $script:Stats.JavaUpdated++
-        }
-        else {
-            throw "keytool import failed: $result"
-        }
-    }
-    catch {
-        Write-Log "Failed to update keystore $KeystorePath`: $_" -Level ERROR
-        $script:Stats.JavaFailed++
-
-        # Restore backup if it exists
-        $backupPath = "$KeystorePath.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        if (Test-Path $backupPath) {
-            Copy-Item -Path $backupPath -Destination $KeystorePath -Force
-        }
     }
 }
 
@@ -656,65 +434,29 @@ function Invoke-Main {
             ""
         }
 
-        # Create temporary certificate file for Java import
-        $tempCertFile = Join-Path -Path $env:TEMP -ChildPath "netskope_cert_$([System.Guid]::NewGuid()).pem"
-        if (-not $DryRun -and (Test-Path $bundlePath)) {
-            # Extract just the Netskope certificate for Java import
-            $netskopeOnly = Get-Content -Path "$NetskopeDataPath\nscacert.pem" -ErrorAction SilentlyContinue
-            if ($netskopeOnly) {
-                $netskopeOnly | Out-File -FilePath $tempCertFile -Encoding ASCII
-            }
+        # Step 3: Find Python certificate files
+        $certFiles = Find-PythonCertificateFiles
+
+        if ($certFiles.Count -eq 0) {
+            Write-Log "No Python certificate files found" -Level WARNING
         }
-
-        # Step 3: Update Python certificates
-        if (-not $SkipPython) {
-            $certFiles = Find-PythonCertificateFiles
-
-            if ($certFiles.Count -eq 0) {
-                Write-Log "No Python certificate files found" -Level WARNING
-            }
-            else {
-                Write-Host ""
-                Write-Log "Updating Python certificate files..."
-
-                foreach ($file in $certFiles) {
-                    Update-CertificateFile -FilePath $file.FullName -NetskopeContent $netskopeContent
-                }
-            }
-        }
-
-        # Step 4: Update Java keystores
-        if (-not $SkipJava) {
+        else {
             Write-Host ""
-            $keystores = Find-JavaKeystores
+            Write-Log "Updating certificate files..."
 
-            if ($keystores.Count -eq 0) {
-                Write-Log "No Java keystores found" -Level WARNING
-            }
-            else {
-                Write-Log "Updating Java keystores..."
-
-                foreach ($keystore in $keystores) {
-                    if (Test-Path $tempCertFile) {
-                        Update-JavaKeystore -KeystorePath $keystore -CertificateFile $tempCertFile
-                    }
-                }
+            foreach ($file in $certFiles) {
+                Update-CertificateFile -FilePath $file.FullName -NetskopeContent $netskopeContent
             }
         }
 
-        # Cleanup temporary file
-        if (Test-Path $tempCertFile) {
-            Remove-Item -Path $tempCertFile -Force -ErrorAction SilentlyContinue
-        }
-
-        # Step 5: Configure environment variables
+        # Step 4: Configure environment variables
         Write-Host ""
         Set-CertificateEnvironmentVariables -BundlePath $bundlePath
 
-        # Step 6: Display summary
+        # Step 5: Display summary
         Write-Summary
 
-        # Step 7: Export log
+        # Step 6: Export log
         $logPath = Export-LogFile
 
         Write-Host "Restart your terminal or applications for changes to take effect." -ForegroundColor Green
