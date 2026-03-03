@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Backups created by the script
+*.backup_*
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
