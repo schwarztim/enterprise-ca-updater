@@ -200,7 +200,7 @@ update_cert_file() {
 
     if has_netskope_cert "$file"; then
         log_warning "Skipping (already patched): $file"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         return 0
     fi
 
@@ -212,7 +212,7 @@ update_cert_file() {
     local backup_file="${file}.backup_$(date +%Y%m%d_%H%M%S)"
     if ! cp "$file" "$backup_file" 2>/dev/null; then
         log_error "Failed to backup: $file (permission denied?)"
-        ((FAILED++))
+        ((FAILED++)) || true
         return 1
     fi
 
@@ -228,11 +228,11 @@ update_cert_file() {
 
     if [[ $? -eq 0 ]]; then
         log_success "Updated: $file"
-        ((UPDATED++))
+        ((UPDATED++)) || true
     else
         log_error "Failed to update: $file"
         mv "$backup_file" "$file" 2>/dev/null
-        ((FAILED++))
+        ((FAILED++)) || true
     fi
 }
 
@@ -331,14 +331,14 @@ update_java_keystore() {
             keytool_cmd="$java_home/bin/keytool"
         else
             log_error "keytool command not found for $keystore"
-            ((JAVA_FAILED++))
+            ((JAVA_FAILED++)) || true
             return 1
         fi
     fi
 
     if has_netskope_in_keystore "$keystore"; then
         log_warning "Skipping (already present): $keystore"
-        ((JAVA_SKIPPED++))
+        ((JAVA_SKIPPED++)) || true
         return 0
     fi
 
@@ -350,7 +350,7 @@ update_java_keystore() {
     local backup_file="${keystore}.backup_$(date +%Y%m%d_%H%M%S)"
     if ! cp "$keystore" "$backup_file" 2>/dev/null; then
         log_error "Failed to backup: $keystore (permission denied?)"
-        ((JAVA_FAILED++))
+        ((JAVA_FAILED++)) || true
         return 1
     fi
 
@@ -360,11 +360,11 @@ update_java_keystore() {
         -keystore "$keystore" \
         -storepass "$JAVA_KEYSTORE_PASSWORD" &>/dev/null; then
         log_success "Updated Java keystore: $keystore"
-        ((JAVA_UPDATED++))
+        ((JAVA_UPDATED++)) || true
     else
         log_error "Failed to update keystore: $keystore"
         mv "$backup_file" "$keystore" 2>/dev/null
-        ((JAVA_FAILED++))
+        ((JAVA_FAILED++)) || true
     fi
 }
 
@@ -395,7 +395,7 @@ update_system_ca_store() {
         cp "$cert_file" "$dest" && update-ca-certificates 2>/dev/null
         if [[ $? -eq 0 ]]; then
             log_success "Updated Debian/Ubuntu system CA store"
-            ((SYSTEM_UPDATED++))
+            ((SYSTEM_UPDATED++)) || true
         else
             log_error "Failed to update system CA store"
         fi
@@ -413,7 +413,7 @@ update_system_ca_store() {
         cp "$cert_file" "$dest" && update-ca-trust extract 2>/dev/null
         if [[ $? -eq 0 ]]; then
             log_success "Updated RHEL/Fedora system CA store"
-            ((SYSTEM_UPDATED++))
+            ((SYSTEM_UPDATED++)) || true
         else
             log_error "Failed to update system CA store"
         fi
@@ -426,7 +426,7 @@ update_system_ca_store() {
         trust anchor "$cert_file" 2>/dev/null
         if [[ $? -eq 0 ]]; then
             log_success "Updated Arch Linux system CA store"
-            ((SYSTEM_UPDATED++))
+            ((SYSTEM_UPDATED++)) || true
         else
             log_error "Failed to update system CA store"
         fi
@@ -460,7 +460,7 @@ update_git_config() {
 
     git config --global http.sslCAInfo "$cert_path"
     log_success "Configured git http.sslCAInfo = $cert_path"
-    ((GIT_UPDATED++))
+    ((GIT_UPDATED++)) || true
 }
 
 # ─── npm/yarn/pnpm Configuration ────────────────────────────────────────────
@@ -479,7 +479,7 @@ update_npm_config() {
         else
             run_quiet npm config set cafile "$cert_path" 2>/dev/null
             log_success "Configured npm cafile = $cert_path"
-            ((NPM_UPDATED++))
+            ((NPM_UPDATED++)) || true
         fi
     fi
 
@@ -516,7 +516,7 @@ update_pip_conda_config() {
         else
             run_quiet "$pip_cmd" config set global.cert "$cert_path" 2>/dev/null
             log_success "Configured pip global.cert = $cert_path"
-            ((PIP_UPDATED++))
+            ((PIP_UPDATED++)) || true
         fi
     fi
 
@@ -589,7 +589,7 @@ rollback_changes() {
         else
             cp "$backup" "$original" 2>/dev/null && {
                 log_success "Restored: $original"
-                ((restored++))
+                ((restored++)) || true
             } || log_error "Failed to restore: $original"
         fi
     done < <(find / -name "*.backup_${date_pattern}*" -print0 2>/dev/null)
@@ -645,15 +645,15 @@ create_combined_bundle() {
 
     if [[ -n "$system_bundle" ]]; then
         if [[ -f "$combined_path" ]]; then
-            log_info "Combined bundle already exists: $combined_path"
+            log_info "Combined bundle already exists: $combined_path" >&2
         else
             cat "$system_bundle" "$cert_file" > "$combined_path" 2>/dev/null && \
-                log_success "Created combined bundle: $combined_path" || \
-                log_warning "Failed to create combined bundle (permission denied?)"
+                log_success "Created combined bundle: $combined_path" >&2 || \
+                log_warning "Failed to create combined bundle (permission denied?)" >&2
         fi
     fi
 
-    # Return best available cert path
+    # Return best available cert path (stdout only — logs go to stderr)
     if [[ -f "$combined_path" ]]; then
         echo "$combined_path"
     else
