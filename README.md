@@ -7,268 +7,166 @@
 
 **Formerly:** netskope-pem-updater
 
-Cross-platform utilities that automatically update certificate stores across multiple platforms and languages with enterprise SSL inspection certificates (Netskope, Zscaler, etc.).
+Cross-platform tool that automatically updates certificate stores across multiple platforms, languages, and developer tools with enterprise SSL inspection certificates (Netskope, Zscaler, etc.).
 
 ## The Problem
 
-When enterprise Secure Web Gateways perform SSL inspection, applications encounter SSL verification failures across multiple platforms:
+When enterprise Secure Web Gateways perform SSL inspection, applications encounter SSL verification failures:
 
 ```
 # Python
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed
-requests.exceptions.SSLError: HTTPSConnectionPool(...): certificate verify failed
+ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]
 
 # Java
 sun.security.validator.ValidatorException: PKIX path building failed
-javax.net.ssl.SSLHandshakeException: sun.security.provider.certpath.SunCertPathBuilderException
 
 # Node.js
 Error: unable to verify the first certificate
-FetchError: request to https://... failed, reason: self signed certificate in certificate chain
 
-# Ruby
-OpenSSL::SSL::SSLError: SSL_connect returned=1 errno=0 state=error: certificate verify failed
+# Git
+fatal: unable to access 'https://...': SSL certificate problem
+
+# npm
+npm ERR! code UNABLE_TO_VERIFY_LEAF_SIGNATURE
+
+# pip
+pip._vendor.urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED]
 ```
-
-This happens because:
-- **Python's certifi** bundles its own CA certificates
-- **Java** uses isolated keystore files (cacerts)
-- **Node.js** has its own CA bundle
-- **Ruby/OpenSSL** uses system certificates but may need explicit paths
 
 ## The Solution
 
 This tool automatically:
+
 1. **Locates** enterprise CA certificates (Netskope, Zscaler, etc.)
 2. **Updates Python** `cacert.pem` files across all virtual environments
-3. **Imports certificates** into Java keystores using keytool
-4. **Configures** environment variables for Node.js, Ruby, and other tools
-5. **Auto-patches** new virtual environments (macOS)
+3. **Imports certificates** into Java keystores
+4. **Configures** git, npm/yarn/pnpm, pip/conda for SSL trust
+5. **Updates** Linux system CA stores (Debian, RHEL, Arch)
+6. **Installs** Docker daemon certificates
+7. **Recommends** environment variables for Node.js, Ruby, AWS CLI, gcloud, and more
+8. **Auto-patches** new virtual environments (macOS zsh hook)
 
 ## Supported Certificate Stores
 
-| Platform | Method | Status |
-|----------|--------|--------|
-| **Python (certifi)** | Append to cacert.pem | ✅ Full Support |
-| **Java** | Import to cacerts keystore | ✅ Full Support |
-| **Node.js** | NODE_EXTRA_CA_CERTS | ✅ Environment Variable |
-| **Ruby/OpenSSL** | SSL_CERT_FILE | ✅ Environment Variable |
-| **cURL** | SSL_CERT_FILE | ✅ Environment Variable |
-| **Git** | http.sslCAInfo | ⚠️ Manual Config |
+| Target                   | Method                                            | Status               |
+| ------------------------ | ------------------------------------------------- | -------------------- |
+| **Python (certifi)**     | Append to cacert.pem                              | Automatic            |
+| **Java**                 | Import to cacerts keystore                        | Automatic            |
+| **Linux System CA**      | update-ca-certificates / update-ca-trust          | Automatic            |
+| **Git**                  | `git config --global http.sslCAInfo`              | Automatic            |
+| **npm/yarn/pnpm**        | `.npmrc` cafile                                   | Automatic            |
+| **pip**                  | `pip config set global.cert`                      | Automatic            |
+| **conda**                | `conda config --set ssl_verify`                   | Automatic            |
+| **Docker**               | Copy to `/etc/docker/certs.d/`                    | Automatic            |
+| **Node.js**              | `NODE_EXTRA_CA_CERTS`                             | Environment Variable |
+| **Ruby/OpenSSL**         | `SSL_CERT_FILE`                                   | Environment Variable |
+| **cURL**                 | `SSL_CERT_FILE`                                   | Environment Variable |
+| **AWS CLI**              | `AWS_CA_BUNDLE`                                   | Environment Variable |
+| **gcloud**               | `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`              | Environment Variable |
+| **Windows System Store** | `Import-Certificate` to `Cert:\LocalMachine\Root` | Automatic (PS)       |
+| **WSL**                  | Detects distros, runs `update-ca-certificates`    | Automatic (PS)       |
 
 ## Quick Start
 
 ### macOS/Linux
 
 ```bash
-# Clone the repository
-git clone https://github.com/schwarztim/netskope-pem-updater.git
-cd netskope-pem-updater
+git clone https://github.com/schwarztim/enterprise-ca-updater.git
+cd enterprise-ca-updater
 
-# Make the script executable
 chmod +x update-netskope-ca-bundle.sh
 
-# Run the updater (updates both Python and Java)
-./update-netskope-ca-bundle.sh
+# Preview what will change
+./update-netskope-ca-bundle.sh --dry-run
 
-# Only update Java keystores
-./update-netskope-ca-bundle.sh --skip-python
+# Update everything
+sudo ./update-netskope-ca-bundle.sh
 
-# Only update Python bundles
-./update-netskope-ca-bundle.sh --skip-java
+# Selective updates
+./update-netskope-ca-bundle.sh --skip-python --skip-java    # Only git/npm/pip/docker
+./update-netskope-ca-bundle.sh --skip-git --skip-npm         # Only Python/Java
 
-# Optional: Add auto-patching to your shell
-echo 'source /path/to/netskope-pem-updater/netskope-venv-hook.zsh' >> ~/.zshrc
+# CI/CD integration
+./update-netskope-ca-bundle.sh --json
+
+# Auto-patch new Python venvs
+echo 'source /path/to/enterprise-ca-updater/netskope-venv-hook.zsh' >> ~/.zshrc
 ```
 
 ### Windows
 
 ```powershell
-# Clone the repository
-git clone https://github.com/schwarztim/netskope-pem-updater.git
-cd netskope-pem-updater
+git clone https://github.com/schwarztim/enterprise-ca-updater.git
+cd enterprise-ca-updater
 
-# Run as Administrator (updates both Python and Java)
-.\Update-NetskopeCABundle.ps1
-
-# Only update Java keystores
-.\Update-NetskopeCABundle.ps1 -SkipPython
-
-# Only update Python bundles
-.\Update-NetskopeCABundle.ps1 -SkipJava
-```
-
----
-
-## Detailed Documentation
-
-## macOS/Linux Edition
-
-### Requirements
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| macOS/Linux | 10.15+ / Any modern distro | |
-| Bash | 4.0+ | |
-| Enterprise SSL Client | Installed | Netskope, Zscaler, etc. |
-| Java (Optional) | 8+ | For Java keystore updates |
-
-### Files
-
-| File | Description |
-|------|-------------|
-| `update-netskope-ca-bundle.sh` | Main script for all certificate store updates |
-| `netskope-venv-hook.zsh` | Zsh hook to auto-patch new Python virtual environments |
-
-### Usage
-
-#### Update All Certificate Stores
-
-```bash
-# Make script executable (if needed)
-chmod +x update-netskope-ca-bundle.sh
-
-# Preview changes (dry-run)
-./update-netskope-ca-bundle.sh --dry-run
-
-# Apply all changes (Python + Java)
-./update-netskope-ca-bundle.sh
-
-# Add extra Python search paths
-NETSKOPE_EXTRA_PATHS='/opt/myapp:/srv/python' ./update-netskope-ca-bundle.sh
-```
-
-#### Command-Line Options
-
-| Option | Description |
-|--------|-------------|
-| `-n, --dry-run` | Preview changes without modifying any files |
-| `-l, --list-paths` | List search paths and exit |
-| `--skip-python` | Skip Python certificate bundle updates |
-| `--skip-java` | Skip Java keystore updates |
-| `-h, --help` | Show help message |
-
-#### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `NETSKOPE_EXTRA_PATHS` | Colon-separated list of additional Python search paths |
-| `REQUESTS_CA_BUNDLE` | Python requests library certificate path |
-| `SSL_CERT_FILE` | OpenSSL/Ruby certificate path |
-| `NODE_EXTRA_CA_CERTS` | Node.js additional CA certificates |
-
-#### Auto-Patch New Virtual Environments
-
-Add to your `~/.zshrc` or `~/.bashrc`:
-
-```bash
-# Enterprise SSL certificate configuration (adapt path to your certificate)
-export REQUESTS_CA_BUNDLE="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
-export SSL_CERT_FILE="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
-export NODE_EXTRA_CA_CERTS="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
-
-# Auto-patch new Python venvs (optional)
-source /path/to/netskope-pem-updater/netskope-venv-hook.zsh
-```
-
-After sourcing, use these commands:
-
-```bash
-# Create and auto-patch virtual environment
-venv              # Creates .venv with certificate
-venv myenv        # Creates myenv with certificate
-
-# For uv users
-uvenv             # Creates .venv using uv with certificate
-
-# Manually patch any venv
-netskope-patch-venv /path/to/venv
-```
-
-### Default Search Paths
-
-**Python:**
-| Location | Description |
-|----------|-------------|
-| `$HOME` | User home directory (finds all venvs) |
-| `/Library/Frameworks/Python.framework` | Framework Python |
-| `/usr/local/lib/python*` | Homebrew Intel Python |
-| `/opt/homebrew/lib/python*` | Homebrew Apple Silicon Python |
-
-**Java:**
-| Location | Description |
-|----------|-------------|
-| `$JAVA_HOME` | Environment variable Java home |
-| `/Library/Java/JavaVirtualMachines/*` | macOS Java installations |
-| `/usr/lib/jvm/*` | Linux Java installations |
-| `/opt/java/*` | Alternative Linux location |
-| `$HOME/.sdkman/candidates/java/*` | SDKMAN Java installations |
-
----
-
-## Windows Edition
-
-### Requirements
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Windows | 10/11 or Server 2016+ | |
-| PowerShell | 5.1 or later | |
-| Privileges | Administrator | Required for system changes |
-| Enterprise SSL Client | Installed | Netskope, Zscaler, etc. |
-| Java (Optional) | 8+ | For Java keystore updates |
-
-### Usage
-
-```powershell
-# Run as Administrator (all updates)
+# Run as Administrator
 .\Update-NetskopeCABundle.ps1
 
 # Preview changes
 .\Update-NetskopeCABundle.ps1 -DryRun
 
-# Force recreation of the bundle
-.\Update-NetskopeCABundle.ps1 -Force
+# Selective updates
+.\Update-NetskopeCABundle.ps1 -SkipPython -SkipJava
+.\Update-NetskopeCABundle.ps1 -SkipGit -SkipNpm
 
-# Only update Java keystores
-.\Update-NetskopeCABundle.ps1 -SkipPython
+# JSON output for automation
+.\Update-NetskopeCABundle.ps1 -Json
 
-# Only update Python bundles
-.\Update-NetskopeCABundle.ps1 -SkipJava
+# Rollback changes from a specific date
+.\Update-NetskopeCABundle.ps1 -Rollback 20260301
 ```
 
-### Command-Line Options
+---
 
-| Parameter | Description |
-|-----------|-------------|
-| `-DryRun` | Preview changes without modifying any files |
-| `-Force` | Recreate the certificate bundle even if it exists |
-| `-SkipPython` | Skip Python certificate bundle updates |
-| `-SkipJava` | Skip Java keystore updates |
-| `-NetskopeDataPath` | Custom path for certificate data directory |
-| `-NetskopeBundle` | Custom name for the certificate bundle file |
+## Command-Line Reference
 
-### Default Search Paths
+### macOS/Linux (`update-netskope-ca-bundle.sh`)
 
-**Python:**
-| Location | Description |
-|----------|-------------|
-| `C:\Program Files\Python*` | Standard Python installations |
-| `%LOCALAPPDATA%\Programs\Python\*` | User Python installations |
-| `%ProgramData%\Anaconda*` | Anaconda distributions |
-| `%ProgramData%\Miniconda*` | Miniconda distributions |
-| `%USERPROFILE%\.conda\envs\*` | Conda virtual environments |
-| `%ProgramFiles%\WindowsApps\*Python*` | Windows Store Python |
+| Option             | Description                             |
+| ------------------ | --------------------------------------- |
+| `-n, --dry-run`    | Preview changes without modifying files |
+| `-l, --list-paths` | List search paths and exit              |
+| `--skip-python`    | Skip Python certificate bundle updates  |
+| `--skip-java`      | Skip Java keystore updates              |
+| `--skip-system`    | Skip Linux system CA store update       |
+| `--skip-git`       | Skip git HTTPS configuration            |
+| `--skip-npm`       | Skip npm/yarn/pnpm configuration        |
+| `--skip-pip`       | Skip pip/conda configuration            |
+| `--skip-docker`    | Skip Docker certificate configuration   |
+| `--json`           | Output JSON summary (for CI/CD)         |
+| `--rollback DATE`  | Restore backups from date (YYYYMMDD)    |
+| `--parallel`       | Update Python cert files in parallel    |
+| `-h, --help`       | Show help message                       |
 
-**Java:**
-| Location | Description |
-|----------|-------------|
-| `%JAVA_HOME%` | Environment variable Java home |
-| `C:\Program Files\Java\*` | Standard Java installations |
-| `C:\Program Files\Eclipse Adoptium\*` | Eclipse Temurin JDK |
-| `C:\Program Files\Amazon Corretto\*` | Amazon Corretto JDK |
-| `C:\Program Files\Microsoft\*` | Microsoft OpenJDK |
-| `%LOCALAPPDATA%\Programs\Eclipse Adoptium\*` | User Eclipse installations |
+### Windows (`Update-NetskopeCABundle.ps1`)
+
+| Parameter           | Description                             |
+| ------------------- | --------------------------------------- |
+| `-DryRun`           | Preview changes without modifying files |
+| `-Force`            | Recreate the certificate bundle         |
+| `-SkipPython`       | Skip Python certificate bundle updates  |
+| `-SkipJava`         | Skip Java keystore updates              |
+| `-SkipSystem`       | Skip Windows system store injection     |
+| `-SkipGit`          | Skip git HTTPS configuration            |
+| `-SkipNpm`          | Skip npm/yarn/pnpm configuration        |
+| `-SkipPip`          | Skip pip/conda configuration            |
+| `-SkipDocker`       | Skip Docker certificate configuration   |
+| `-Json`             | Output JSON summary                     |
+| `-Rollback DATE`    | Restore backups from date (YYYYMMDD)    |
+| `-NetskopeDataPath` | Custom certificate data directory       |
+| `-NetskopeBundle`   | Custom certificate bundle filename      |
+
+### Environment Variables
+
+| Variable                             | Used By                         | Platform    |
+| ------------------------------------ | ------------------------------- | ----------- |
+| `REQUESTS_CA_BUNDLE`                 | Python `requests`               | All         |
+| `SSL_CERT_FILE`                      | OpenSSL, Ruby, cURL             | All         |
+| `NODE_EXTRA_CA_CERTS`                | Node.js                         | All         |
+| `AWS_CA_BUNDLE`                      | AWS CLI                         | All         |
+| `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` | gcloud                          | All         |
+| `CURL_CA_BUNDLE`                     | cURL                            | All         |
+| `NETSKOPE_EXTRA_PATHS`               | Script: additional search paths | macOS/Linux |
 
 ---
 
@@ -276,114 +174,93 @@ netskope-patch-venv /path/to/venv
 
 ### Certificate Detection
 
-The scripts detect enterprise CA certificates from:
-- **macOS**: `/Library/Application Support/Netskope/STAgent/data/nscacert.pem` or System Keychain
-- **Windows**: `%ProgramData%\Netskope\STAgent\data` or Windows Certificate Stores
-- **Linux**: System certificate stores or custom paths
+| Platform    | Locations Checked                                                                  |
+| ----------- | ---------------------------------------------------------------------------------- |
+| **macOS**   | `/Library/Application Support/Netskope/STAgent/data/nscacert.pem`, System Keychain |
+| **Windows** | `%ProgramData%\Netskope\STAgent\data`, Windows Certificate Stores                  |
+| **Linux**   | `/opt/netskope/`, `/etc/netskope/`, `/opt/zscaler/`, system CA dirs                |
 
-### Python Update Process
+### Update Process
 
-For each discovered `cacert.pem`:
-1. Creates a timestamped backup (`cacert.pem.backup_YYYYMMDD_HHMMSS`)
-2. Checks for existing certificate marker to avoid duplicates
-3. Appends enterprise certificate with identification marker
-4. Reports success/skip/failure
+**Python:** Creates timestamped backup, checks for existing marker, appends enterprise cert with identification marker.
 
-### Java Update Process
+**Java:** Creates timestamped backup, checks alias existence, imports via `keytool -import`.
 
-For each discovered Java keystore (`cacerts`):
-1. Creates a timestamped backup (`cacerts.backup_YYYYMMDD_HHMMSS`)
-2. Checks if certificate alias already exists
-3. Uses `keytool -import` to add certificate to keystore
-4. Default password is "changeit" (standard Java keystore password)
-5. Reports success/skip/failure
+**Git/npm/pip/conda:** Checks current config, skips if already set, applies global configuration.
 
-### Environment Variables
+**Linux System CA:** Detects distro (`update-ca-certificates` vs `update-ca-trust` vs `trust anchor`), copies cert to appropriate directory.
 
-Configure these for global SSL certificate resolution:
+**Docker:** Copies cert to `/etc/docker/certs.d/`, provides Dockerfile guidance.
 
-| Variable | Used By | Platform |
-|----------|---------|----------|
-| `REQUESTS_CA_BUNDLE` | Python `requests` library | All |
-| `SSL_CERT_FILE` | OpenSSL-based tools, Ruby | All |
-| `NODE_EXTRA_CA_CERTS` | Node.js | All |
-| `AWS_CA_BUNDLE` | AWS CLI | All |
-| `CURL_CA_BUNDLE` | cURL | All |
+**Windows System Store (PS):** Uses `Import-Certificate` to add to `Cert:\LocalMachine\Root`.
+
+**WSL (PS):** Detects installed distros, copies cert into each, runs appropriate update command.
+
+### Rollback
+
+Every modified file gets a timestamped backup. Use `--rollback YYYYMMDD` to restore all backups from a given date:
+
+```bash
+# Restore all changes from March 1, 2026
+./update-netskope-ca-bundle.sh --rollback 20260301
+
+# Preview what would be restored
+./update-netskope-ca-bundle.sh --rollback 20260301 --dry-run
+```
+
+### JSON Output
+
+For CI/CD integration, use `--json` to get machine-readable output:
+
+```json
+{
+  "version": "2.0.0",
+  "timestamp": "2026-03-03T12:00:00Z",
+  "stats": {
+    "python": { "updated": 5, "skipped": 2, "failed": 0 },
+    "java": { "updated": 1, "skipped": 0, "failed": 0 },
+    "git": { "updated": 1 },
+    "npm": { "updated": 1 },
+    "pip": { "updated": 1 },
+    "system": { "updated": 0 }
+  }
+}
+```
 
 ---
 
-## Language-Specific Configuration
+## Auto-Patch Virtual Environments
 
-### Python
+Add to your `~/.zshrc`:
 
-✅ **Automatically handled** by updating `cacert.pem` files
-
-Additional manual config (if needed):
-```python
-import os
-os.environ['REQUESTS_CA_BUNDLE'] = '/path/to/certificate.pem'
-```
-
-### Java
-
-✅ **Automatically handled** by importing to cacerts keystore
-
-Verify import:
 ```bash
-keytool -list -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit -alias netskope-ca
+# Enterprise SSL certificate configuration
+export REQUESTS_CA_BUNDLE="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
+export SSL_CERT_FILE="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
+export NODE_EXTRA_CA_CERTS="/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
+
+# Auto-patch new Python venvs
+source /path/to/enterprise-ca-updater/netskope-venv-hook.zsh
 ```
 
-### Node.js
+Commands:
 
-✅ **Handled via environment variable** `NODE_EXTRA_CA_CERTS`
-
-Manual per-project config:
-```javascript
-// In your Node.js application
-process.env.NODE_EXTRA_CA_CERTS = '/path/to/certificate.pem';
-```
-
-Or via `.npmrc`:
-```ini
-cafile=/path/to/certificate.pem
-```
-
-### Ruby
-
-✅ **Handled via environment variable** `SSL_CERT_FILE`
-
-Manual per-script config:
-```ruby
-require 'openssl'
-OpenSSL::SSL::SSLContext::DEFAULT_CERT_STORE.set_default_paths
-OpenSSL::SSL::SSLContext::DEFAULT_CERT_FILE = '/path/to/certificate.pem'
-```
-
-### Go
-
-Manual configuration required:
 ```bash
-# Environment variable
-export SSL_CERT_FILE=/path/to/certificate.pem
-
-# Or in Go code
-import "crypto/x509"
-# Load custom certificate pool
+venv              # Creates .venv with certificate patching
+venv myenv        # Creates named venv with certificate patching
+uvenv             # Creates .venv using uv with certificate patching
+netskope-patch-venv /path/to/venv   # Manually patch any venv
 ```
 
-### PHP
+---
 
-Manual configuration in `php.ini`:
-```ini
-curl.cainfo=/path/to/certificate.pem
-openssl.cafile=/path/to/certificate.pem
-```
+## Docker Integration
 
-### Git
+The script installs the certificate for Docker daemon registry trust. For build-time trust in Docker images, add to your `Dockerfile`:
 
-Manual configuration:
-```bash
-git config --global http.sslCAInfo /path/to/certificate.pem
+```dockerfile
+COPY enterprise-ca.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
 ```
 
 ---
@@ -392,123 +269,63 @@ git config --global http.sslCAInfo /path/to/certificate.pem
 
 ### SSL Errors Persist After Running
 
-1. **Restart your terminal** - Environment variables need a new shell
-2. **Verify environment variables**:
-   ```bash
-   # macOS/Linux
-   echo $REQUESTS_CA_BUNDLE
-   echo $SSL_CERT_FILE
-   echo $NODE_EXTRA_CA_CERTS
-
-   # Windows
-   $env:REQUESTS_CA_BUNDLE
-   $env:SSL_CERT_FILE
-   ```
+1. **Restart your terminal** — environment variables need a new shell
+2. **Verify environment variables**: `echo $REQUESTS_CA_BUNDLE`
 3. **Re-run the script** to ensure all files are patched
-4. **Check certificate exists**:
-   ```bash
-   # macOS
-   ls -la "/Library/Application Support/Netskope/STAgent/data/nscacert.pem"
-
-   # Windows
-   dir "$env:ProgramData\Netskope\STAgent\data\nscacert*.pem"
-   ```
-
-### Java Certificate Not Working
-
-1. **Verify import**:
-   ```bash
-   keytool -list -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit | grep netskope
-   ```
-2. **Check Java version** - Multiple Java versions may have separate keystores
-3. **Run script with sudo/admin** if permission denied
+4. **Check certificate exists**: `ls -la "/Library/Application Support/Netskope/STAgent/data/nscacert.pem"`
 
 ### Permission Denied
 
-**macOS/Linux**: Some system files require sudo:
 ```bash
+# macOS/Linux — run with sudo
 sudo ./update-netskope-ca-bundle.sh
+
+# Windows — run PowerShell as Administrator
 ```
 
-**Windows**: Run PowerShell as Administrator
+### Java Certificate Not Working
+
+```bash
+keytool -list -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit | grep netskope
+```
+
+Multiple Java versions may have separate keystores — the script finds and updates all of them.
 
 ### Reverting Changes
 
-Each updated file has a timestamped backup:
 ```bash
-# Find backups
-find . -name "cacert.pem.backup_*"
-find . -name "cacerts.backup_*"
+# Find all backups
+find / -name "*.backup_*" 2>/dev/null | head -20
 
-# Restore specific backup
-cp cacert.pem.backup_20240115_143022 cacert.pem
-cp cacerts.backup_20240115_143022 cacerts
-```
-
-### Execution Policy Error (Windows)
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
-.\Update-NetskopeCABundle.ps1
-```
-
-### keytool Not Found
-
-Ensure Java is installed and in your PATH:
-```bash
-# Check Java installation
-java -version
-
-# Find keytool
-which keytool  # macOS/Linux
-where keytool  # Windows
-
-# Set JAVA_HOME if needed
-export JAVA_HOME=/path/to/java  # macOS/Linux
-$env:JAVA_HOME="C:\Program Files\Java\jdk-17"  # Windows
+# Restore from a specific date
+./update-netskope-ca-bundle.sh --rollback 20260301
 ```
 
 ---
 
 ## FAQ
 
-**Q: Will this break my Python/Java installation?**
-A: No. The script creates backups before modifying any file and only appends/imports certificates.
+**Q: Will this break my installations?**
+A: No. The script creates backups before every modification and only appends/imports certificates.
 
 **Q: Do I need to run this every time I create a new virtual environment?**
-A: If you use the `netskope-venv-hook.zsh`, new venvs are patched automatically. Otherwise, run the script periodically.
+A: Use `netskope-venv-hook.zsh` to auto-patch new venvs. Otherwise, run periodically.
 
 **Q: Does this work with conda/anaconda?**
-A: Yes, the script searches common conda paths. You may need to add custom paths using `NETSKOPE_EXTRA_PATHS`.
+A: Yes. It searches common conda paths and configures `conda config --set ssl_verify`.
 
-**Q: What if I don't have Netskope/Zscaler installed?**
-A: The script will exit gracefully if it can't find the enterprise certificate.
-
-**Q: Can I use this for other enterprise SSL inspection tools (Zscaler, Blue Coat, etc.)?**
-A: Yes! Just modify the `NETSKOPE_DATA_PATH` and `NETSKOPE_CERT_FILE` variables to point to your certificate location.
+**Q: Can I use this for other SSL inspection tools (Zscaler, Blue Coat)?**
+A: Yes. Modify `NETSKOPE_DATA_PATH` and `NETSKOPE_CERT_FILE`, or place your cert in a detected location.
 
 **Q: Does this work with multiple Java versions?**
-A: Yes, the script finds and updates all Java installations on your system.
-
-**Q: Why do I need to update Java keystores separately from Python?**
-A: Java uses its own isolated keystore system (cacerts) that is separate from system and Python certificate stores.
-
-**Q: What's the default Java keystore password?**
-A: The default password is "changeit" - this is the standard Java keystore password.
+A: Yes. All Java installations are discovered and updated.
 
 ---
 
 ## Repository Name Change
 
-This repository was renamed from `netskope-pem-updater` to `enterprise-ca-updater` to reflect its broader scope beyond just Netskope certificates. It now supports:
-- Multiple enterprise SSL inspection tools (Netskope, Zscaler, etc.)
-- Multiple certificate stores (Python, Java)
-- Multiple programming languages (Python, Java, Node.js, Ruby, Go, etc.)
+This repository was renamed from `netskope-pem-updater` to `enterprise-ca-updater` to reflect its broader scope. GitHub automatically redirects the old URL.
 
-**Old URL:** `https://github.com/schwarztim/netskope-pem-updater`
-**New URL:** `https://github.com/schwarztim/enterprise-ca-updater`
-
-GitHub automatically redirects the old URL to the new one, but you may want to update your local repository:
 ```bash
 git remote set-url origin https://github.com/schwarztim/enterprise-ca-updater.git
 ```
@@ -519,30 +336,27 @@ git remote set-url origin https://github.com/schwarztim/enterprise-ca-updater.gi
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/improvement`)
-3. Commit your changes (`git commit -am 'Add new feature'`)
-4. Push to the branch (`git push origin feature/improvement`)
+3. Commit your changes
+4. Push to the branch
 5. Open a Pull Request
 
 ### Ideas for Contributions
+
 - Support for additional certificate stores (PostgreSQL, MySQL, etc.)
 - Support for additional platforms (Alpine Linux, FreeBSD, etc.)
 - Automated testing framework
-- Detection and support for additional enterprise SSL inspection tools
 - Integration with configuration management tools (Ansible, Puppet, Chef)
+- Homebrew tap for easy installation
 
 ---
 
 ## References
 
-### Documentation
 - [Configuring CLI-based Tools with Netskope](https://community.netskope.com/next-gen-swg-2/configuring-cli-based-tools-and-development-frameworks-to-work-with-netskope-ssl-interception-7015)
 - [Java keytool Documentation](https://docs.oracle.com/en/java/javase/11/tools/keytool.html)
 - [Node.js Enterprise Network Configuration](https://nodejs.org/en/learn/http/enterprise-network-configuration)
 - [Nextstrain CA Certificate Trust Stores](https://docs.nextstrain.org/en/latest/reference/ca-certificates.html)
-
-### Related Tools
 - [Python certifi](https://github.com/certifi/python-certifi)
-- [node_extra_ca_certs_mozilla_bundle](https://www.npmjs.com/package/node_extra_ca_certs_mozilla_bundle)
 
 ---
 
@@ -556,4 +370,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-*This tool is not affiliated with or endorsed by Netskope, Inc., Zscaler, Inc., or any other enterprise security vendor.*
+_This tool is not affiliated with or endorsed by Netskope, Inc., Zscaler, Inc., or any other enterprise security vendor._

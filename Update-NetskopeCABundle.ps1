@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Updates Python CA certificate bundles and Java keystores with Netskope certificates on Windows.
+    Updates Python CA certificate bundles, Java keystores, and developer tool SSL configs with Netskope certificates on Windows.
 
 .DESCRIPTION
     This script:
@@ -11,6 +11,10 @@
     4. Finds all Java cacerts keystores on the system
     5. Imports Netskope certificates into each Java keystore
     6. Sets environment variables for SSL certificate resolution
+    7. Imports certificates to the Windows system trust store
+    8. Configures git, npm/yarn/pnpm, and pip/conda SSL certificate paths
+    9. Detects and updates WSL certificate stores
+    10. Supports rollback of previous changes by date
 
 .PARAMETER NetskopeDataPath
     Path to the Netskope data directory. Defaults to %ProgramData%\Netskope\STAgent\data
@@ -30,6 +34,27 @@
 .PARAMETER SkipJava
     Skip Java keystore updates.
 
+.PARAMETER SkipGit
+    Skip git SSL certificate configuration.
+
+.PARAMETER SkipNpm
+    Skip npm/yarn/pnpm SSL certificate configuration.
+
+.PARAMETER SkipSystem
+    Skip Windows system certificate store injection.
+
+.PARAMETER SkipDocker
+    Skip Docker certificate configuration.
+
+.PARAMETER SkipPip
+    Skip pip/conda SSL certificate configuration.
+
+.PARAMETER Rollback
+    Restore backups from the given date (YYYYMMDD format).
+
+.PARAMETER Json
+    Output JSON instead of human-readable text.
+
 .EXAMPLE
     .\Update-NetskopeCABundle.ps1
     Runs the script with default settings.
@@ -45,6 +70,14 @@
 .EXAMPLE
     .\Update-NetskopeCABundle.ps1 -SkipPython
     Only update Java keystores, skip Python bundles.
+
+.EXAMPLE
+    .\Update-NetskopeCABundle.ps1 -Rollback 20260301
+    Restore all files backed up on March 1, 2026.
+
+.EXAMPLE
+    .\Update-NetskopeCABundle.ps1 -Json
+    Output results as JSON for automation pipelines.
 
 .NOTES
     Author: Tim Schwarz
@@ -70,7 +103,28 @@ param(
     [switch]$SkipPython,
 
     [Parameter(HelpMessage = "Skip Java keystore updates")]
-    [switch]$SkipJava
+    [switch]$SkipJava,
+
+    [Parameter(HelpMessage = "Skip git SSL certificate configuration")]
+    [switch]$SkipGit,
+
+    [Parameter(HelpMessage = "Skip npm/yarn/pnpm SSL certificate configuration")]
+    [switch]$SkipNpm,
+
+    [Parameter(HelpMessage = "Skip Windows system certificate store injection")]
+    [switch]$SkipSystem,
+
+    [Parameter(HelpMessage = "Skip Docker certificate configuration")]
+    [switch]$SkipDocker,
+
+    [Parameter(HelpMessage = "Skip pip/conda SSL certificate configuration")]
+    [switch]$SkipPip,
+
+    [Parameter(HelpMessage = "Restore backups from the given date (YYYYMMDD format)")]
+    [string]$Rollback,
+
+    [Parameter(HelpMessage = "Output JSON instead of human-readable text")]
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
@@ -120,7 +174,7 @@ function Write-Banner {
 
 ================================================================================
                      Netskope Certificate Bundle Updater
-                              Windows Edition
+                              Windows Edition v2.0.0
 ================================================================================
 
 "@
@@ -128,6 +182,16 @@ function Write-Banner {
 }
 
 function Write-Summary {
+    if ($Json) {
+        $output = @{
+            timestamp = Get-Date -Format "o"
+            stats = $script:Stats
+            log = $script:UpdateLog
+        } | ConvertTo-Json -Depth 3
+        Write-Output $output
+        return
+    }
+
     $summary = @"
 
 ================================================================================
@@ -246,6 +310,239 @@ function Initialize-NetskopeBundle {
     }
 
     return $bundlePath
+}
+
+#endregion
+
+#region Windows System Store and WSL Functions
+
+function Import-CertificateToSystemStore {
+    param([Parameter(Mandatory)][string]$CertificateFile)
+
+    Write-Log "Importing certificate to Windows system store..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would import certificate to Cert:\LocalMachine\Root" -Level WARNING
+        return
+    }
+
+    try {
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CertificateFile)
+
+        # Check if already in store
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "LocalMachine")
+        $store.Open("ReadOnly")
+        $existing = $store.Certificates | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
+        $store.Close()
+
+        if ($existing) {
+            Write-Log "Certificate already in system store (thumbprint: $($cert.Thumbprint))" -Level WARNING
+            return
+        }
+
+        $store.Open("ReadWrite")
+        $store.Add($cert)
+        $store.Close()
+        Write-Log "Imported certificate to Cert:\LocalMachine\Root (thumbprint: $($cert.Thumbprint))" -Level SUCCESS
+    }
+    catch {
+        Write-Log "Failed to import to system store: $_" -Level ERROR
+    }
+}
+
+function Test-WSLInstalled {
+    return (Get-Command wsl.exe -ErrorAction SilentlyContinue) -ne $null
+}
+
+function Update-WSLCertificates {
+    param([Parameter(Mandatory)][string]$CertificateFile)
+
+    if (-not (Test-WSLInstalled)) { return }
+
+    Write-Log "WSL detected — offering to update Linux certificate stores..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would copy certificate to WSL and run update-ca-certificates" -Level WARNING
+        return
+    }
+
+    try {
+        $wslDistros = wsl.exe --list --quiet 2>$null | Where-Object { $_ -match '\S' }
+        foreach ($distro in $wslDistros) {
+            $distro = $distro.Trim()
+            if ([string]::IsNullOrWhiteSpace($distro)) { continue }
+
+            Write-Log "Updating certificates in WSL distro: $distro"
+            $wslCertPath = "/usr/local/share/ca-certificates/enterprise-ca.crt"
+
+            # Copy cert into WSL
+            $winPath = (Resolve-Path $CertificateFile).Path -replace '\\', '/'
+            $winPath = "/mnt/" + $winPath.Substring(0,1).ToLower() + $winPath.Substring(2)
+
+            wsl.exe -d $distro -- bash -c "sudo cp '$winPath' '$wslCertPath' && sudo update-ca-certificates 2>/dev/null || sudo update-ca-trust 2>/dev/null" 2>$null
+
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Updated certificates in WSL distro: $distro" -Level SUCCESS
+            } else {
+                Write-Log "Failed to update WSL distro: $distro" -Level WARNING
+            }
+        }
+    }
+    catch {
+        Write-Log "WSL certificate update failed: $_" -Level WARNING
+    }
+}
+
+#endregion
+
+#region Developer Tool Configuration Functions
+
+function Update-GitSslConfig {
+    param([Parameter(Mandatory)][string]$BundlePath)
+
+    Write-Log "Configuring git SSL certificate..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would set git config --global http.sslCAInfo $BundlePath" -Level WARNING
+        return
+    }
+
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        & git config --global http.sslCAInfo $BundlePath 2>$null
+        Write-Log "Configured git http.sslCAInfo = $BundlePath" -Level SUCCESS
+    } else {
+        Write-Log "git not found, skipping" -Level WARNING
+    }
+}
+
+function Update-NpmConfig {
+    param([Parameter(Mandatory)][string]$BundlePath)
+
+    Write-Log "Configuring npm/yarn/pnpm SSL certificate..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would set npm cafile=$BundlePath" -Level WARNING
+        return
+    }
+
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        & npm config set cafile $BundlePath 2>$null
+        Write-Log "Configured npm cafile = $BundlePath" -Level SUCCESS
+    }
+    if (Get-Command yarn -ErrorAction SilentlyContinue) {
+        & yarn config set cafile $BundlePath 2>$null
+        Write-Log "Configured yarn cafile = $BundlePath" -Level SUCCESS
+    }
+    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
+        # pnpm uses .npmrc
+        Write-Log "pnpm uses .npmrc — already configured via npm" -Level SUCCESS
+    }
+}
+
+function Update-PipCondaConfig {
+    param([Parameter(Mandatory)][string]$BundlePath)
+
+    Write-Log "Configuring pip/conda SSL certificate..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would set pip global.cert and conda ssl_verify" -Level WARNING
+        return
+    }
+
+    if (Get-Command pip -ErrorAction SilentlyContinue) {
+        & pip config set global.cert $BundlePath 2>$null
+        Write-Log "Configured pip global.cert = $BundlePath" -Level SUCCESS
+    }
+    if (Get-Command conda -ErrorAction SilentlyContinue) {
+        & conda config --set ssl_verify $BundlePath 2>$null
+        Write-Log "Configured conda ssl_verify = $BundlePath" -Level SUCCESS
+    }
+}
+
+#endregion
+
+#region Rollback Functions
+
+function Invoke-Rollback {
+    param([Parameter(Mandatory)][string]$DatePattern)
+
+    Write-Log "Rolling back changes from date pattern: $DatePattern"
+
+    $backupFiles = Get-ChildItem -Path $env:SystemDrive -Recurse -Filter "*.backup_${DatePattern}*" -ErrorAction SilentlyContinue
+
+    if ($backupFiles.Count -eq 0) {
+        Write-Log "No backup files found matching pattern: $DatePattern" -Level WARNING
+        return
+    }
+
+    foreach ($backup in $backupFiles) {
+        $originalPath = $backup.FullName -replace '\.backup_\d{8}_\d{6}$', ''
+        if ($DryRun) {
+            Write-Log "[DRY-RUN] Would restore: $originalPath from $($backup.Name)" -Level WARNING
+        } else {
+            Copy-Item -Path $backup.FullName -Destination $originalPath -Force
+            Write-Log "Restored: $originalPath" -Level SUCCESS
+        }
+    }
+}
+
+#endregion
+
+#region Scheduled Task Functions
+
+function Register-UpdateTask {
+    Write-Log "Creating scheduled task for periodic certificate updates..."
+
+    if ($DryRun) {
+        Write-Log "[DRY-RUN] Would create scheduled task 'Enterprise CA Updater'" -Level WARNING
+        return
+    }
+
+    try {
+        $scriptPath = $PSCommandPath
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "9:00AM"
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+        Register-ScheduledTask -TaskName "Enterprise CA Updater" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+
+        Write-Log "Scheduled task 'Enterprise CA Updater' created (weekly, Mondays 9AM)" -Level SUCCESS
+    }
+    catch {
+        Write-Log "Failed to create scheduled task: $_" -Level ERROR
+    }
+}
+
+#endregion
+
+#region Package Manager Discovery
+
+function Find-PackageManagerPaths {
+    Write-Log "Searching for package manager installations (winget, scoop, chocolatey)..."
+
+    $paths = [System.Collections.ArrayList]::new()
+
+    # Scoop
+    $scoopDir = "$env:USERPROFILE\scoop\apps"
+    if (Test-Path $scoopDir) {
+        $pythonPaths = Get-ChildItem -Path $scoopDir -Directory -Filter "python*" -ErrorAction SilentlyContinue
+        foreach ($p in $pythonPaths) {
+            [void]$paths.Add($p.FullName)
+        }
+    }
+
+    # Chocolatey
+    $chocoDir = "$env:ChocolateyInstall\lib"
+    if (Test-Path $chocoDir -ErrorAction SilentlyContinue) {
+        $pythonPaths = Get-ChildItem -Path $chocoDir -Directory -Filter "python*" -ErrorAction SilentlyContinue
+        foreach ($p in $pythonPaths) {
+            [void]$paths.Add($p.FullName)
+        }
+    }
+
+    Write-Log "Found $($paths.Count) package manager path(s)"
+    return $paths
 }
 
 #endregion
@@ -639,6 +936,11 @@ function Export-LogFile {
 function Invoke-Main {
     Write-Banner
 
+    if ($Rollback) {
+        Invoke-Rollback -DatePattern $Rollback
+        return
+    }
+
     if ($DryRun) {
         Write-Log "Running in DRY-RUN mode - no changes will be made" -Level WARNING
         Write-Host ""
@@ -702,19 +1004,46 @@ function Invoke-Main {
             }
         }
 
+        # Step 5: Configure environment variables
+        Write-Host ""
+        Set-CertificateEnvironmentVariables -BundlePath $bundlePath
+
+        # Step 6: Import to Windows system store
+        if (-not $SkipSystem -and (Test-Path $tempCertFile)) {
+            Write-Host ""
+            Import-CertificateToSystemStore -CertificateFile $tempCertFile
+        }
+
+        # Step 7: Configure git SSL
+        if (-not $SkipGit) {
+            Write-Host ""
+            Update-GitSslConfig -BundlePath $bundlePath
+        }
+
+        # Step 8: Configure npm/yarn/pnpm
+        if (-not $SkipNpm) {
+            Write-Host ""
+            Update-NpmConfig -BundlePath $bundlePath
+        }
+
+        # Step 9: Configure pip/conda
+        if (-not $SkipPip) {
+            Write-Host ""
+            Update-PipCondaConfig -BundlePath $bundlePath
+        }
+
+        # Step 10: WSL detection
+        Update-WSLCertificates -CertificateFile $tempCertFile
+
         # Cleanup temporary file
         if (Test-Path $tempCertFile) {
             Remove-Item -Path $tempCertFile -Force -ErrorAction SilentlyContinue
         }
 
-        # Step 5: Configure environment variables
-        Write-Host ""
-        Set-CertificateEnvironmentVariables -BundlePath $bundlePath
-
-        # Step 6: Display summary
+        # Display summary
         Write-Summary
 
-        # Step 7: Export log
+        # Export log
         $logPath = Export-LogFile
 
         Write-Host "Restart your terminal or applications for changes to take effect." -ForegroundColor Green
