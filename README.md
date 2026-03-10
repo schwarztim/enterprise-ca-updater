@@ -256,12 +256,48 @@ netskope-patch-venv /path/to/venv   # Manually patch any venv
 
 ## Docker Integration
 
-The script installs the certificate for Docker daemon registry trust. For build-time trust in Docker images, add to your `Dockerfile`:
+The script installs the certificate for Docker daemon registry trust **and** a transparent shell wrapper that auto-injects the certificate into every container.
+
+### Automatic Container Injection (Shell Wrapper)
+
+The `netskope-docker-hook.zsh` wraps the `docker` command to transparently inject the Netskope CA certificate into every container:
+
+```bash
+# Installed automatically by update-netskope-ca-bundle.sh, or manually:
+source /path/to/enterprise-ca-updater/netskope-docker-hook.zsh
+```
+
+What gets injected:
+
+| Command              | Injection                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `docker run`         | Volume mount + `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` env vars |
+| `docker build`       | `--build-arg NETSKOPE_CERT=<cert contents>`                                          |
+| `docker compose run` | Volume mount + env vars (same as `docker run`)                                       |
+
+The wrapper is idempotent — if you already pass a netskope cert volume or build arg, it won't duplicate it.
+
+To bypass the wrapper for a single command:
+
+```bash
+docker-no-netskope run alpine wget https://example.com
+```
+
+### Dockerfile Usage
+
+For `docker build`, the cert is available as the `NETSKOPE_CERT` build arg:
 
 ```dockerfile
-COPY enterprise-ca.crt /usr/local/share/ca-certificates/
-RUN update-ca-certificates
+ARG NETSKOPE_CERT=""
+RUN if [ -n "$NETSKOPE_CERT" ]; then \
+      echo "$NETSKOPE_CERT" > /usr/local/share/ca-certificates/netskope.crt && \
+      update-ca-certificates; \
+    fi
 ```
+
+### Manual Docker Daemon Certs
+
+The script also copies the certificate to `/etc/docker/certs.d/` for Docker daemon registry trust.
 
 ---
 

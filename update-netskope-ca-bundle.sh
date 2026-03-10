@@ -556,21 +556,77 @@ update_docker_certs() {
     local dest="$docker_cert_dir/enterprise-ca.crt"
     if [[ -f "$dest" ]] && cmp -s "$cert_file" "$dest" 2>/dev/null; then
         log_warning "Docker CA certificate already installed"
-        return 0
-    fi
-
-    if [[ "$dry_run" == "true" ]]; then
+    elif [[ "$dry_run" == "true" ]]; then
         log_warning "[DRY-RUN] Would copy certificate to $dest"
+    else
+        cp "$cert_file" "$dest" 2>/dev/null && \
+            log_success "Installed Docker CA certificate: $dest" || \
+            log_warning "Failed to install Docker CA certificate (need sudo?)"
+
+        log_info "For Docker builds, add to Dockerfile:"
+        log_info "  COPY enterprise-ca.crt /usr/local/share/ca-certificates/"
+        log_info "  RUN update-ca-certificates"
+    fi
+
+    # Copy cert to Docker-accessible location under $HOME
+    # (Docker Desktop on macOS cannot bind-mount /Library/Application Support)
+    local docker_home_cert="$HOME/.config/netskope"
+    mkdir -p "$docker_home_cert" 2>/dev/null
+    local src_combined="$NETSKOPE_DATA_PATH/nscacert_combined.pem"
+    local src_raw="$NETSKOPE_DATA_PATH/$NETSKOPE_CERT_FILE"
+    if [[ -f "$src_combined" ]]; then
+        if cmp -s "$src_combined" "$docker_home_cert/nscacert_combined.pem" 2>/dev/null; then
+            log_warning "Docker-accessible cert already up to date: $docker_home_cert/"
+        elif [[ "$dry_run" == "true" ]]; then
+            log_warning "[DRY-RUN] Would copy cert to $docker_home_cert/"
+        else
+            cp "$src_combined" "$docker_home_cert/nscacert_combined.pem"
+            log_success "Copied cert to Docker-accessible path: $docker_home_cert/nscacert_combined.pem"
+        fi
+    fi
+    if [[ -f "$src_raw" ]]; then
+        cp "$src_raw" "$docker_home_cert/nscacert.pem" 2>/dev/null
+    fi
+
+    # Always check/install Docker shell wrapper
+    install_docker_hook
+}
+
+# ─── Docker Shell Hook Installation ──────────────────────────────────────────
+
+install_docker_hook() {
+    local hook_file
+    hook_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/netskope-docker-hook.zsh"
+
+    if [[ ! -f "$hook_file" ]]; then
+        log_warning "Docker hook not found at: $hook_file"
         return 0
     fi
 
-    cp "$cert_file" "$dest" 2>/dev/null && \
-        log_success "Installed Docker CA certificate: $dest" || \
-        log_warning "Failed to install Docker CA certificate (need sudo?)"
+    local shell_rc=""
+    if [[ -f "$HOME/.zshrc" ]]; then
+        shell_rc="$HOME/.zshrc"
+    elif [[ -f "$HOME/.bashrc" ]]; then
+        shell_rc="$HOME/.bashrc"
+    else
+        log_warning "No .zshrc or .bashrc found — cannot install Docker hook"
+        return 0
+    fi
 
-    log_info "For Docker builds, add to Dockerfile:"
-    log_info "  COPY enterprise-ca.crt /usr/local/share/ca-certificates/"
-    log_info "  RUN update-ca-certificates"
+    # Check if already sourced
+    if grep -q "netskope-docker-hook" "$shell_rc" 2>/dev/null; then
+        log_warning "Docker shell hook already installed in $shell_rc"
+        return 0
+    fi
+
+    {
+        echo ""
+        echo "# Auto-inject Netskope CA certs into Docker containers"
+        echo "[[ -f \"$hook_file\" ]] && source \"$hook_file\""
+    } >> "$shell_rc"
+
+    log_success "Installed Docker shell hook in $shell_rc"
+    log_info "Restart your terminal or run: source $shell_rc"
 }
 
 # ─── Rollback ────────────────────────────────────────────────────────────────
