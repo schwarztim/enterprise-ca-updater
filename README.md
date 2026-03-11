@@ -301,6 +301,76 @@ The script also copies the certificate to `/etc/docker/certs.d/` for Docker daem
 
 ---
 
+## ToolHive (thv) Integration
+
+[ToolHive](https://github.com/stacklok/toolhive) is a container-based manager for MCP (Model Context Protocol) servers. The shell wrapper also intercepts `thv run` to automatically inject the enterprise CA certificate into every MCP server container.
+
+### Automatic Injection
+
+When you source `netskope-docker-hook.zsh`, both `docker` and `thv` commands are wrapped:
+
+| Command   | Injection                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------- |
+| `thv run` | `-v` volume mount + `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` env vars |
+
+```bash
+# These are equivalent — the wrapper adds the cert automatically:
+thv run --name my-server --transport stdio localhost:5555/my-mcp:latest
+
+# What actually runs:
+thv run \
+  -v "$HOME/.config/netskope/nscacert_combined.pem:/etc/ssl/certs/netskope-ca.crt:ro" \
+  -e SSL_CERT_FILE=/etc/ssl/certs/netskope-ca.crt \
+  -e NODE_EXTRA_CA_CERTS=/etc/ssl/certs/netskope-ca.crt \
+  -e REQUESTS_CA_BUNDLE=/etc/ssl/certs/netskope-ca.crt \
+  --name my-server --transport stdio localhost:5555/my-mcp:latest
+```
+
+Idempotent — if you already pass a netskope cert volume, it won't duplicate it.
+
+### ToolHive CA Certificate for Builds
+
+ToolHive also supports a global CA certificate for container builds:
+
+```bash
+thv config set-ca-cert "/Library/Application Support/Netskope/STAgent/data/nscacert_combined.pem"
+```
+
+This is set automatically by `update-netskope-ca-bundle.sh`.
+
+### ToolHive Secrets
+
+For secure credential management, ToolHive supports an `environment` secrets provider that reads from `TOOLHIVE_SECRET_*` environment variables. Combined with the macOS Keychain, this keeps credentials encrypted at rest:
+
+```bash
+# Store a secret in macOS Keychain
+security add-generic-password -s "toolhive-secret" -a "MY_API_KEY" \
+  -w "secret-value" ~/Library/Keychains/secure-tools.keychain-db
+
+# Load at shell startup (add to ~/.zshrc)
+export TOOLHIVE_SECRET_MY_API_KEY=$(security find-generic-password \
+  -s "toolhive-secret" -a "MY_API_KEY" \
+  -w ~/Library/Keychains/secure-tools.keychain-db)
+
+# Configure toolhive to use environment provider
+thv secret provider environment
+
+# Reference in thv run
+thv run --name my-server \
+  --secret "MY_API_KEY,target=MY_API_KEY" \
+  localhost:5555/my-mcp:latest
+```
+
+A helper script (`toolhive-secrets-hook.zsh`) is included to automate loading secrets from the keychain at shell startup.
+
+### Bypass
+
+```bash
+thv-no-netskope run --name my-server localhost:5555/my-mcp:latest
+```
+
+---
+
 ## Troubleshooting
 
 ### SSL Errors Persist After Running
