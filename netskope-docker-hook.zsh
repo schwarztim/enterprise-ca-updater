@@ -134,7 +134,55 @@ _netskope_docker_compose_run() {
     command docker compose run "${args[@]}" "$@"
 }
 
-# Disable the wrapper (escape hatch)
+# ─── Toolhive wrapper ────────────────────────────────────────────────────────
+
+thv() {
+    # Pass through if no cert found
+    if [[ -z "$_NETSKOPE_DOCKER_CERT" ]]; then
+        command thv "$@"
+        return
+    fi
+
+    case "$1" in
+        run)
+            shift
+            _netskope_thv_run "$@"
+            ;;
+        *)
+            command thv "$@"
+            ;;
+    esac
+}
+
+_netskope_thv_run() {
+    local args=()
+    local has_netskope_vol=false
+
+    for arg in "$@"; do
+        if [[ "$arg" == *"netskope"* ]] || [[ "$arg" == *"nscacert"* ]]; then
+            has_netskope_vol=true
+            break
+        fi
+    done
+
+    if [[ "$has_netskope_vol" == false ]]; then
+        args+=(
+            -v "${_NETSKOPE_DOCKER_CERT}:${_NETSKOPE_CONTAINER_CERT_PATH}:ro"
+            -e "SSL_CERT_FILE=${_NETSKOPE_CONTAINER_CERT_PATH}"
+            -e "NODE_EXTRA_CA_CERTS=${_NETSKOPE_CONTAINER_CERT_PATH}"
+            -e "REQUESTS_CA_BUNDLE=${_NETSKOPE_CONTAINER_CERT_PATH}"
+        )
+    fi
+
+    command thv run "${args[@]}" "$@"
+}
+
+# ─── Escape hatches ──────────────────────────────────────────────────────────
+
 docker-no-netskope() {
     command docker "$@"
+}
+
+thv-no-netskope() {
+    command thv "$@"
 }
